@@ -1,1 +1,1 @@
-# 2023년 OS 수업에서 진행한 xv6 project
+# 2023 SKKU OS Class xv6 project
