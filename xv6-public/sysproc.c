@@ -130,3 +130,37 @@ sys_ps(void)
   ps(pid);
   return 0;
 }
+
+int
+sys_mmap(void)
+{
+  uint addr;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+
+  if(argint(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 ||
+     argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+
+  return mmap(addr, length, prot, flags, fd, offset);
+}
+
+int
+sys_munmap(void)
+{
+  uint addr;
+
+  if(argint(0, (int*)&addr) < 0)
+    return -1;
+
+  return munmap(addr);
+}
+
+int
+freemem(void)
+{
+  return freemem();
+}

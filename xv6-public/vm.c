@@ -385,10 +385,53 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+int 
+mmap_mappages(pde_t *pgdir, void *va, uint size, char* pa, int prot)
+{
+  if (mappages(pgdir, (char*)va, PGSIZE, V2P(pa), prot) < 0) { // failed to map page
+    kfree(pa);
+    return -1; // fail
+    }
+  return 0; // success
+}
 
+int 
+mmap_walkpgdir(pde_t *pgdir, const void *va)
+{
+  pte_t *pte = walkpgdir(pgdir, (char*)va, 0); // return a pointer to PTE corresponding to the virtual address
+  if(pte && (*pte & PTE_P)){ // check if it is valid and actually mapped
+    uint pa = PTE_ADDR(*pte);
+    if(pa==0){
+      panic("kfree");
+    }
+    char *new_pa = P2V(pa);
+    kfree(new_pa); // fill page with 1, and put it into freelist
+    *pte = 0; // empty PTE
+    
+    return 0; // success
+  }
+  return -1; // fail
+}
+
+int 
+pgfault_mappages(pde_t *pgdir, void *va, uint size, char* pa, int prot)
+{
+  if (mappages(pgdir, (char*)va, PGSIZE, V2P(pa), prot) < 0) { // failed to map page
+    kfree(pa);
+    return -1; // fail
+  }
+  // Change PTE value
+  if (prot & PROT_WRITE){
+    pte_t *pte = walkpgdir(pgdir, (char*)va, 0);
+    if(pte && (*pte & PTE_P)){ // check if it is valid and actually mapped
+      *pte = (*pte) | PTE_W;
+    }
+  }
+  return 0; // success
+}
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.

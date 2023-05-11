@@ -7,6 +7,9 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 static const int prio_to_weight[40] = {
   /* 0 */  88761, 71755, 56483, 46273, 36291,
@@ -18,6 +21,10 @@ static const int prio_to_weight[40] = {
   /* 30 */   110,    87,    70,    56,    45,
   /* 35 */    36,    29,    23,    18,    15,
 };
+
+extern struct mmap_area mmap_areas[64];
+
+int pgfault_handler(struct trapframe*);
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -88,6 +95,16 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
+  case T_PGFLT:
+  if (myproc() == 0 || (tf->cs&3) == 0) {
+    // In kernel, it must be our mistake.
+    cprintf("unexpected page fault from cpu %d eip %x (cr2=0x%x)\n",
+            cpuid(), tf->eip, rcr2());
+    if(pgfault_handler(tf) < 0){ // page fault handling failed
+      panic("page fault");
+    }
+  }
+  break;
 
   //PAGEBREAK: 13
   default:
@@ -125,4 +142,49 @@ trap(struct trapframe *tf)
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
     exit();
+}
+
+// Page fault handler
+int
+pgfault_handler(struct trapframe *tf)
+{
+  int i;
+  uint fault_va = rcr2(); // get fault address
+  // Determine whether the access was a read or a write
+  int read = (tf->err & 2) == 0;
+  int write = (tf->err & 2) == 1;
+
+  for(i=0;i<64;i++){
+    // Find 
+    if(mmap_areas[i].addr == fault_va){
+      if((mmap_areas[i].prot & PROT_READ) != read || (mmap_areas[i].prot & PROT_WRITE) != write)
+        break;
+      // Do some action for page according to faulted address
+      // 1. Allocate new physical page
+      char *pa = kalloc();
+      if (pa == 0) { // memory cannot be allocated
+        cprintf("memory cannot be allocated\n");
+        return -1;
+      }
+      // 2. Fill new page with 0
+      memset(pa, 0, PGSIZE);
+
+      // 3. If it is file mapping, read file into physical page with offset
+      if(!(mmap_areas[i].flags & MAP_ANONYMOUS)){
+        struct file *f = mmap_areas[i].f;
+        f->off = mmap_areas[i].offset;
+        if(fileread(f, pa, PGSIZE) < 0){
+          cprintf("file read failed\n");
+          return -1;
+        }
+        // map page & fill it properly
+        if(pgfault_mappages(mmap_areas[i].p->pgdir, (char*)fault_va, PGSIZE, pa, mmap_areas[i].prot) < 0){
+          cprintf("failed to map page\n"); // failed to map page
+          return -1;
+        }
+      }
+      return 0; // success
+    }
+  }
+  return -1; // cannot find corresponding mmap_area
 }

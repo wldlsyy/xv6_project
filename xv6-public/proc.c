@@ -6,6 +6,9 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 static const int prio_to_weight[40] = {
   /* 0 */  88761, 71755, 56483, 46273, 36291,
@@ -18,6 +21,7 @@ static const int prio_to_weight[40] = {
   /* 35 */    36,    29,    23,    18,    15,
 };
 
+struct mmap_area mmap_areas[64];
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -166,6 +170,9 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  for (int i=0; i<64; i++)
+    mmap_areas[i].used = 0;
+
   release(&ptable.lock);
 }
 
@@ -232,6 +239,28 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+
+  // Find free mmap_area slot
+  for(i=0; i<64; i++){
+    if(mmap_areas[i].used == 0) {
+      break;
+    }
+  }
+
+  // Child process need to have same mmap area address with parent process
+  for(j=0;j<64;j++){
+    if(mmap_areas[j].p == curproc){ // Find parent process mmap_area
+      // copy the mmap_area info
+      mmap_areas[i].f = mmap_areas[j].f;
+      mmap_areas[i].addr = mmap_areas[j].addr;
+      mmap_areas[i].length = mmap_areas[j].length;
+      mmap_areas[i].offset = mmap_areas[j].offset;
+      mmap_areas[i].prot = mmap_areas[j].prot;
+      mmap_areas[i].flags = mmap_areas[j].flags;
+      mmap_areas[i].p = np; // change it to indicate it is child process's area
+      mmap_areas[i].used = 1; // mark the position to indicate that it is used
+    }
+  }
 
   release(&ptable.lock);
 
@@ -684,4 +713,157 @@ ps(int pid)
   release(&ptable.lock);
   cprintf("\n");
   return;
+}
+
+// MMAP
+uint
+mmap(uint addr, int length, int prot, int flags, int fd, int offset)
+{
+  struct proc *p = myproc();
+  struct file *f;
+  f = p->ofile[fd];
+  int i;
+
+  // Check if addr is page aligned and length is a multiple of page size
+  if((addr % PGSIZE) != 0 || (length % PGSIZE) != 0){
+    cprintf("Error: addr or length is not page size aligned\n");
+    return 0;
+  }
+
+  // It's not anonymous, but when fd is -1
+  if(!(flags & MAP_ANONYMOUS) && (fd == -1)){
+    cprintf("Error: not anonymous, but fd is -1\n");
+    return 0;
+  }
+
+  // Check if fd and offset does not match with flag anonymous
+  if((flags & MAP_ANONYMOUS) && (fd != -1 || offset != 0)){
+    cprintf("Error: anonymous, but fd or offset is wrong\n");
+    return 0;
+  }
+
+  // Find free mmap_area slot
+  for(i=0; i<64; i++){
+    if(mmap_areas[i].used == 0) {
+      break;
+    }
+  }
+
+  if(i==64){ // mmap_area is full!
+    cprintf("Error: mmap_area is full\n");
+    return 0;
+  }
+
+  uint va_start = 0x40000000 + addr;
+  uint va_end = va_start + length;
+  uint va;
+  // set up mmaped region for any flags
+  mmap_areas[i].addr = va_start;
+  mmap_areas[i].length = length;
+  mmap_areas[i].offset = offset;
+  mmap_areas[i].prot = prot;
+  mmap_areas[i].flags = flags;
+  mmap_areas[i].p = p;
+  mmap_areas[i].used = 1; // mark the position to indicate that it is used
+
+  // Mapping
+  // WITH MAP_POPULATE -> allocate physical page & make page table for whole mapping area
+  if(flags & MAP_POPULATE){
+    // Anonymous Mapping
+    if(flags & MAP_ANONYMOUS){
+      for (va = va_start; va < va_end; va += PGSIZE) {
+        char *pa = kalloc();
+        if (pa == 0) { // memory cannot be allocated
+          cprintf("memory cannot be allocated\n");
+          return 0;
+        }
+        memset(pa, 0, PGSIZE); // allocate new pages and initialize them to 0.
+    
+        if(mmap_mappages(p->pgdir, (char*)va, PGSIZE, pa, prot) < 0){ // failed to map page
+          cprintf("failed to map page\n");
+          return 0;
+        }
+      }
+    }
+    // File Mapping
+    else{
+      if (fd < 0 || fd >= NOFILE || f == 0){ // check valid file descriptor
+        cprintf("invalid file descriptor\n");
+        return 0;
+      }
+      // Check if prot matches with the file's open flag
+      if((prot & PROT_WRITE) != f->writable || (prot & PROT_READ) != f->readable){
+        cprintf("Error: prot does not match with file's open flag\n");
+        return 0;
+      }
+
+      for (va = va_start; va < va_end; va += PGSIZE) {
+        char *pa = kalloc();
+        if (pa == 0){ // memory cannot be allocated
+          cprintf("memory cannot be allocated\n");
+          return 0;
+        }
+
+        // read file from the offset given from the argument
+        f->off = offset;
+        if(fileread(f, pa, PGSIZE) < 0){
+          cprintf("file read failed\n");
+          return 0;
+        }
+        mmap_areas[i].f = f;
+        // map page
+        if(mmap_mappages(p->pgdir, (char*)va, PGSIZE, pa, prot) < 0){ // failed to map page
+          cprintf("failed to map page\n");
+          return 0;
+        }
+      }
+    }
+  }
+  // WITHOUT MAP_POPULATE -> just record its mapping area, which is done at the beginning
+  return va_start;
+}
+
+// MUNMAP
+int 
+munmap(uint addr)
+{
+  struct proc *p = myproc();
+  int i, found;
+  
+  // Find the mmap_area for the given addr
+  found = 0;
+  for(i=0;i<64;i++){
+    if(mmap_areas[i].addr == addr){
+      found = 1;
+      break;
+    }
+  }
+  if(!found){
+    cprintf("Error: matched addr not found\n");
+    return -1; // matched addr not found, fail!
+  }
+
+  // Free physical pages & page table entry
+  uint va_end = addr + mmap_areas[i].length;
+  uint va;
+
+  for(va = addr; va < va_end; va += PGSIZE){
+    if(mmap_walkpgdir(p->pgdir, (char*)va) < 0){
+      cprintf("Error: no allocated physical page");
+      return -1; // fail
+    }
+  }
+  // Remove corresponding mmap_area structure, can now be allocated
+  mmap_areas[i].p = 0;
+  return 0; // success
+}
+
+uint
+freemem(void)
+{
+  /* Return current number of free memory pages */
+  int cnt;
+  cnt = kcount();
+
+  return cnt;
 }

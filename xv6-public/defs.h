@@ -68,6 +68,7 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
+uint		    kcount(void);
 
 // kbd.c
 void            kbdintr(void);
@@ -124,6 +125,9 @@ int             getpname(int);
 int             getnice(int);
 int             setnice(int, int);
 void            ps(int);
+uint 		    mmap(uint, int, int, int, int, int);
+int 		    munmap(uint);
+uint 		    freemem(void);    
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -189,6 +193,9 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+int		        mmap_mappages(pde_t *pgdir, void*, uint, char*, int);
+int		        mmap_walkpgdir(pde_t *pgdir, const void*);
+int     	    pgfault_mappages(pde_t *pgdir, void*, uint, char*, int);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

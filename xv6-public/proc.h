@@ -62,3 +62,15 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
+
+// Data structure to store all mmap areas created by mmap()
+struct mmap_area{
+  struct file *f;
+  uint addr;
+  int length;
+  int offset;
+  int prot;
+  int flags;
+  struct proc *p; // all process with this mmap_area
+  int used; // to mark whether mmap_area is used or not
+}
